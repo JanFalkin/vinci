@@ -7,15 +7,25 @@
 using namespace vinci;
 
 int main(int argc, char* argv[]) {
-    size_t n = 8;
-    size_t m = 5;
     bool verbose = true;
 
     // Parse command line arguments
-    if (argc >= 3) {
-        n = std::stoull(argv[1]);
-        m = std::stoull(argv[2]);
+    if (argc < 3) {
+        std::cout << "Usage: " << argv[0] << " <N> <M> [--quiet]\n\n";
+        std::cout << "Generate all non-equivalent trees with N nodes and at most M leaves.\n\n";
+        std::cout << "Arguments:\n";
+        std::cout << "  N         Number of nodes in the tree\n";
+        std::cout << "  M         Maximum number of leaf nodes allowed\n";
+        std::cout << "  --quiet   Optional: suppress tree output, show only summary\n\n";
+        std::cout << "Examples:\n";
+        std::cout << "  " << argv[0] << " 8 5\n";
+        std::cout << "  " << argv[0] << " 30 3 --quiet\n";
+        return 1;
     }
+
+    size_t n = std::stoull(argv[1]);
+    size_t m = std::stoull(argv[2]);
+
     if (argc >= 4 && std::string(argv[3]) == "--quiet") {
         verbose = false;
     }
