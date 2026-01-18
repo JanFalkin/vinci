@@ -5,6 +5,9 @@
 #include <future>
 #include <queue>
 #include <mutex>
+#include <iostream>
+#include <format>
+#include <chrono>
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
@@ -36,19 +39,9 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
         return count_;
     }
 
-    // Use optimized algorithm for small M (very constrained problems)
+    // Use parallel optimized algorithm for constrained problems
     if (TreeOptimizer::shouldUseOptimized(n, m)) {
-        // Generate separately for each exact leaf count
-        for (size_t exactLeaves = 1; exactLeaves <= m; ++exactLeaves) {
-            std::vector<Tree> results;
-            TreeOptimizer::generateWithExactLeaves(n, exactLeaves, results);
-
-            for (auto& tree : results) {
-                tree.sortToCanonical();
-                callback(tree);
-                ++count_;
-            }
-        }
+        count_ = TreeOptimizer::generateAllWithCallback(n, m, callback, useMultithreading);
         return count_;
     }
 
@@ -75,9 +68,11 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     size_t remainingNodes = n - 1;
 
     // Generate all partitions first
+    // For larger M, we need more partitions to keep threads busy
+    size_t maxChildren = std::min(remainingNodes, std::max(size_t(20), m * 5));
     std::vector<std::pair<size_t, std::vector<size_t>>> allPartitions;
 
-    for (size_t numChildren = 1; numChildren <= std::min(remainingNodes, size_t(20)); ++numChildren) {
+    for (size_t numChildren = 1; numChildren <= maxChildren; ++numChildren) {
         std::vector<std::vector<size_t>> partitions;
         std::vector<size_t> current;
         generatePartitions(remainingNodes, numChildren, current, partitions);
@@ -91,36 +86,47 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     // Process partitions in parallel with per-thread caches
     std::vector<std::future<std::vector<Tree>>> futures;
     std::atomic<size_t> partitionIndex{0};
+    std::atomic<size_t> partitionsCompleted{0};
+    size_t totalPartitions = allPartitions.size();
 
     // Launch worker threads
     for (size_t t = 0; t < maxThreads; ++t) {
         futures.push_back(std::async(std::launch::async,
-            [this, &allPartitions, &partitionIndex, n, m]() -> std::vector<Tree> {
+            [this, &allPartitions, &partitionIndex, &partitionsCompleted, totalPartitions, n, m, maxThreads]() -> std::vector<Tree> {
                 // Each thread gets its own cache (replicated data)
                 std::vector<std::vector<std::vector<Tree>>> threadCache = cache_;
                 std::vector<Tree> threadResults;
 
                 while (true) {
-                    size_t idx = partitionIndex.fetch_add(1);
-                    if (idx >= allPartitions.size()) break;
+                    // Grab work in larger batches to reduce contention
+                    size_t batchSize = std::max(size_t(1), allPartitions.size() / (maxThreads * 4));
+                    size_t startIdx = partitionIndex.fetch_add(batchSize);
+                    size_t endIdx = std::min(startIdx + batchSize, allPartitions.size());
 
-                    auto& partition = allPartitions[idx].second;
+                    if (startIdx >= allPartitions.size()) break;
 
-                    // Generate child tree options for this partition
-                    std::vector<std::vector<Tree>> childTreeOptions(partition.size());
+                    for (size_t idx = startIdx; idx < endIdx; ++idx) {
+                        auto& partition = allPartitions[idx].second;
 
-                    bool validPartition = true;
-                    for (size_t i = 0; i < partition.size(); ++i) {
-                        generateTreesRecursive(partition[i], m, childTreeOptions[i], threadCache);
-                        if (childTreeOptions[i].empty()) {
-                            validPartition = false;
-                            break;
+                        // Generate child tree options for this partition
+                        std::vector<std::vector<Tree>> childTreeOptions(partition.size());
+
+                        bool validPartition = true;
+                        for (size_t i = 0; i < partition.size(); ++i) {
+                            generateTreesRecursive(partition[i], m, childTreeOptions[i], threadCache);
+                            if (childTreeOptions[i].empty()) {
+                                validPartition = false;
+                                break;
+                            }
                         }
-                    }
 
-                    if (validPartition) {
-                        std::vector<Tree> currentChildren;
-                        generateCombinations(partition, m, childTreeOptions, 0, currentChildren, threadResults);
+                        if (validPartition) {
+                            std::vector<Tree> currentChildren;
+                            generateCombinations(partition, m, childTreeOptions, 0, currentChildren, threadResults);
+                        }
+
+                        // Update progress
+                        partitionsCompleted.fetch_add(1);
                     }
                 }
 
@@ -128,6 +134,36 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
             }
         ));
     }
+
+    // Progress reporting thread
+    std::atomic<bool> done{false};
+    auto progressFuture = std::async(std::launch::async, [&]() {
+        auto startTime = std::chrono::steady_clock::now();
+        
+        while (!done.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - startTime).count();
+            size_t currentCount = count_.load();
+            size_t completed = partitionsCompleted.load();
+            
+            // Always show progress, even if tree count is 0 (still computing)
+            if (currentCount > 0) {
+                // Calculate overall rate
+                double overallRate = elapsed > 0 ? static_cast<double>(currentCount) / elapsed : 0.0;
+                
+                std::cout << std::format("\rProgress: {} trees | {}s elapsed | {:.0f} trees/s | Partitions: {}/{}",
+                                        currentCount, elapsed, overallRate, completed, totalPartitions)
+                          << std::flush;
+            } else if (completed > 0 || elapsed > 0) {
+                // Show partition progress even when no trees counted yet
+                std::cout << std::format("\rComputing... {}s elapsed | Partitions: {}/{}",
+                                        elapsed, completed, totalPartitions)
+                          << std::flush;
+            }
+        }
+    });
 
     // Collect results as they complete
     for (auto& future : futures) {
@@ -138,6 +174,10 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
             ++count_;
         }
     }
+
+    done = true;
+    progressFuture.wait();
+    std::cout << "\r" << std::string(80, ' ') << "\r" << std::flush; // Clear progress line
 
     return count_;
 }

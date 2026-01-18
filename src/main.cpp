@@ -49,14 +49,19 @@ int main(int argc, char* argv[]) {
             tree.print(std::cout, "  ");
             std::cout << "\n";
         } else {
-            // Print progress every 1000 trees
+            // Print progress every 1000 trees (overwrite same line)
             if (current % 1000 == 0) {
-                std::cout << std::format("Generated {} trees so far...\n", current);
+                std::cout << std::format("\rGenerated {} trees so far...", current) << std::flush;
             }
         }
     };
 
     size_t total = generator.generate(n, m, callback, true);
+
+    // Clear the progress line if we were in quiet mode
+    if (!verbose) {
+        std::cout << "\r" << std::string(60, ' ') << "\r" << std::flush;
+    }
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
