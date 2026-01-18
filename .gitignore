@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Test outputs
+Testing/
+
+# Exclude markdown files (to be added later after review)
+*.md
