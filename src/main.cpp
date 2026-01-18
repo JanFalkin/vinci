@@ -9,7 +9,6 @@ using namespace vinci;
 int main(int argc, char* argv[]) {
     bool verbose = true;
 
-    // Parse command line arguments
     if (argc < 3) {
         std::cout << "Usage: " << argv[0] << " <N> <M> [--quiet]\n\n";
         std::cout << "Generate all non-equivalent trees with N nodes and at most M leaves.\n\n";
@@ -23,6 +22,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Parse command line arguments
     size_t n = std::stoull(argv[1]);
     size_t m = std::stoull(argv[2]);
 
