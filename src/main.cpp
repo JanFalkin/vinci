@@ -1,7 +1,7 @@
 #include "tree_generator.h"
 #include <iostream>
 #include <chrono>
-#include <iomanip>
+#include <format>
 #include <atomic>
 
 using namespace vinci;
@@ -30,18 +30,18 @@ int main(int argc, char* argv[]) {
 
     // Callback to print each tree as it's generated
     auto callback = [&count, verbose](const Tree& tree) {
-        count++;
+        size_t current = ++count;
         if (verbose) {
-            std::cout << "Tree #" << count << ":\n";
-            std::cout << "  Representation: " << tree.toString() << "\n";
-            std::cout << "  Nodes: " << tree.getNodeCount()
-                      << ", Leaves: " << tree.getLeafCount() << "\n";
+            std::cout << std::format("Tree #{}:\n", current);
+            std::cout << std::format("  Representation: {}\n", tree.toString());
+            std::cout << std::format("  Nodes: {}, Leaves: {}\n",
+                                    tree.getNodeCount(), tree.getLeafCount());
             tree.print(std::cout, "  ");
             std::cout << "\n";
         } else {
             // Print progress every 1000 trees
-            if (count % 1000 == 0) {
-                std::cout << "Generated " << count << " trees so far...\n";
+            if (current % 1000 == 0) {
+                std::cout << std::format("Generated {} trees so far...\n", current);
             }
         }
     };
@@ -52,19 +52,17 @@ int main(int argc, char* argv[]) {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
     std::cout << std::string(60, '=') << "\n";
-    std::cout << "Total trees generated: " << total << "\n";
-    std::cout << "Time taken: " << duration.count() << " ms";
+    std::cout << std::format("Total trees generated: {}\n", total);
+    std::cout << std::format("Time taken: {} ms", duration.count());
 
     if (duration.count() >= 1000) {
-        std::cout << " (" << std::fixed << std::setprecision(2)
-                  << duration.count() / 1000.0 << " seconds)";
+        std::cout << std::format(" ({:.2f} seconds)", duration.count() / 1000.0);
     }
     std::cout << "\n";
 
     if (total > 0) {
         double avgTime = static_cast<double>(duration.count()) / total;
-        std::cout << "Average time per tree: " << std::fixed << std::setprecision(6)
-                  << avgTime << " ms\n";
+        std::cout << std::format("Average time per tree: {:.6f} ms\n", avgTime);
     }
 
     return 0;

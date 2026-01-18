@@ -1,6 +1,7 @@
 #include "tree.h"
 #include <algorithm>
 #include <sstream>
+#include <ranges>
 
 namespace vinci {
 
@@ -57,15 +58,6 @@ std::string Tree::toString() const {
     }
     oss << ")";
     return oss.str();
-}
-
-bool Tree::operator<(const Tree& other) const {
-    // Compare by string representation for canonical ordering
-    return toString() < other.toString();
-}
-
-bool Tree::operator==(const Tree& other) const {
-    return toString() == other.toString();
 }
 
 void Tree::print(std::ostream& os, const std::string& prefix, bool isLast) const {

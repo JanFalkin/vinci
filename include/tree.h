@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <ostream>
+#include <compare>
 
 namespace vinci {
 
@@ -36,9 +37,13 @@ public:
     // String representation for printing and comparison
     std::string toString() const;
 
-    // Comparison operators for canonical form
-    bool operator<(const Tree& other) const;
-    bool operator==(const Tree& other) const;
+    // Three-way comparison for canonical ordering (C++20)
+    auto operator<=>(const Tree& other) const {
+        return toString() <=> other.toString();
+    }
+
+    // Equality comparison (C++20)
+    bool operator==(const Tree& other) const = default;
 
     // Print tree in a readable format
     void print(std::ostream& os, const std::string& prefix = "", bool isLast = true) const;

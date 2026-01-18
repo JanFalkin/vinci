@@ -5,8 +5,14 @@
 #include <functional>
 #include <mutex>
 #include <atomic>
+#include <concepts>
 
 namespace vinci {
+
+// Concept for tree callback functions (C++20)
+template<typename F>
+concept TreeCallbackType = std::invocable<F, const Tree&> &&
+                           std::same_as<void, std::invoke_result_t<F, const Tree&>>;
 
 /**
  * @brief Generates all non-equivalent trees with N nodes and at most M leaves
