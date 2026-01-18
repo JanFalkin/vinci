@@ -1,4 +1,5 @@
 #include "tree_generator.h"
+#include "tree_optimizer.h"
 #include <algorithm>
 #include <thread>
 #include <future>
@@ -31,6 +32,22 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
         for (const auto& tree : results) {
             callback(tree);
             ++count_;
+        }
+        return count_;
+    }
+
+    // Use optimized algorithm for small M (very constrained problems)
+    if (TreeOptimizer::shouldUseOptimized(n, m)) {
+        // Generate separately for each exact leaf count
+        for (size_t exactLeaves = 1; exactLeaves <= m; ++exactLeaves) {
+            std::vector<Tree> results;
+            TreeOptimizer::generateWithExactLeaves(n, exactLeaves, results);
+
+            for (auto& tree : results) {
+                tree.sortToCanonical();
+                callback(tree);
+                ++count_;
+            }
         }
         return count_;
     }

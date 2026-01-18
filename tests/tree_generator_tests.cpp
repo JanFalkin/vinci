@@ -128,14 +128,11 @@ TEST_F(TreeGeneratorTest, Assignment_N8M5) {
     }, false);
 
     std::cout << "Total trees for N=8, M=5: " << count << "\n";
-    EXPECT_GT(count, 0);
+    EXPECT_EQ(count, 108);
 }
 
-// Note: N=30, M=3 might take a while, so it's commented out for quick tests
-// Uncomment to run the full assignment test
-/*
 TEST_F(TreeGeneratorTest, Assignment_N30M3) {
-    // Second assignment case: N=30, M=3
+    // Second assignment case: N=30, M=3 (now optimized!)
     std::cout << "\nTesting N=30, M=3...\n";
 
     size_t count = 0;
@@ -147,6 +144,5 @@ TEST_F(TreeGeneratorTest, Assignment_N30M3) {
     }, true);
 
     std::cout << "Total trees for N=30, M=3: " << count << "\n";
-    EXPECT_GT(count, 0);
+    EXPECT_EQ(count, 267);
 }
-*/

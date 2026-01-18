@@ -23,6 +23,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(SOURCES
     src/tree_generator.cpp
     src/tree.cpp
+    src/tree_optimizer.cpp
 )
 
 # Main executable
