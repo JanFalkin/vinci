@@ -46,10 +46,12 @@ public:
 
     /**
      * @brief Check if we should use optimized algorithm
-     * Use parallel optimizer for any M when N is large
+     * Only use for tight leaf constraints where specialized algorithms excel
      */
-    static bool shouldUseOptimized(size_t n, size_t) {
-        return n >= 15;  // Parallel optimizer works for any M
+    static bool shouldUseOptimized(size_t n, size_t m) {
+        // Use optimizer only when M is very small (≤4) and N is large enough to benefit
+        // For larger M, the parallel generator is more efficient
+        return n >= 15 && m <= 4;
     }
 
     /**
