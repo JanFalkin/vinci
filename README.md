@@ -61,25 +61,38 @@ Examples:
 ## Running the Main Program
 
 ```bash
-# Run with default values (N=8, M=5)
-./tree_generation
-
 # Run with custom values
-./tree_generation <N> <M>
+./tree_generation <N> <M> [--quiet]
 
 # Examples:
-./tree_generation 8 5
-./tree_generation 30 3
+./tree_generation 8 5                    # Generate N=8, M=5 with verbose output
+./tree_generation 30 3 --quiet           # Generate N=30, M=3 quietly
 ```
+
+**Arguments:**
+- `N`: Number of nodes in the tree
+- `M`: Maximum number of leaf nodes allowed
+- `--quiet`: Optional flag to suppress tree output, show only summary
 
 ## Running Tests
 
+The project includes 22 comprehensive tests covering:
+- Basic tree operations and canonical form
+- Algorithm correctness for various N and M values
+- **OEIS A000081 validation**: Verifies counts match the authoritative sequence for rooted trees (N=1-14)
+
 ```bash
-# From build directory
-ctest --output-on-failure
+# Run all tests (using Python runner)
+./run_tests.py
+
+# Or use CMake directly
+cd build && ctest --output-on-failure
 
 # Or run the test executable directly
 ./tree_tests
+
+# Run only OEIS validation tests
+./tree_tests --gtest_filter="*OEIS*"
 ```
 
 ## Project Structure
@@ -88,13 +101,16 @@ ctest --output-on-failure
 .
 ├── CMakeLists.txt
 ├── README.md
+├── run_tests.py
 ├── include/
 │   ├── tree.h
-│   └── tree_generator.h
+│   ├── tree_generator.h
+│   └── tree_optimizer.h
 ├── src/
 │   ├── main.cpp
 │   ├── tree.cpp
-│   └── tree_generator.cpp
+│   ├── tree_generator.cpp
+│   └── tree_optimizer.cpp
 └── tests/
     ├── tree_tests.cpp
     └── tree_generator_tests.cpp
@@ -122,17 +138,16 @@ The generator uses a recursive approach:
 
 The code solves both required test cases efficiently:
 
-1. **N=8, M=5**: ✅ Generates 108 trees in 7ms
-2. **N=30, M=3**: ✅ Generates 267 trees in 10ms (using specialized algorithm)
+1. **N=8, M=5**: ✅ Generates 108 trees in ~8ms
+2. **N=30, M=3**: ✅ Generates 267 trees in ~70ms (using specialized algorithm for M≤4)
 
 ### Performance on 32-Core System
 
-- **N=8, M=5**: 108 trees in 7ms (standard algorithm)
-- **N=15, M=5**: 224,874 trees in 16s using 17 cores (1682% CPU)
-- **N=20, M=3**: 46,132 trees in 14s using 25+ cores (2539% CPU)
-- **N=30, M=3**: 267 trees in 10ms (specialized algorithm for small M)
+- **N=8, M=5**: 108 trees in ~8ms
+- **N=30, M=3**: 267 trees in ~70ms (using specialized TreeOptimizer for M≤4)
+- **N=14, M=50**: 32,973 trees in ~26s with multi-core parallelization
 
-See [PERFORMANCE.md](PERFORMANCE.md) for detailed performance analysis.
+The implementation automatically uses all available CPU cores, achieving ~9 cores active (868% CPU utilization) on compute-intensive workloads.
 
 ## Multithreading Implementation
 
@@ -149,7 +164,7 @@ The implementation checks system memory and prevents execution when:
 - Estimated memory usage exceeds available RAM
 - For N ≥ 25, displays warnings if memory usage will be significant
 
-On a 32-core system with 96 GB RAM, the implementation achieves **25+ cores active** (2539% CPU usage).
+On a 32-core system with 96 GB RAM, the implementation achieves **~9 cores active** (868% CPU usage for N=14,M=50 workload).
 
 ## GPU Considerations
 
@@ -171,7 +186,7 @@ While GPU acceleration might seem attractive for combinatorial problems, this sp
 
 **Current CPU solution advantages:**
 
-- Achieved **2539% CPU utilization** (25+ cores) - comparable to GPU CUDA core saturation
+- Achieved **868% CPU utilization** (~9 cores actively working) with good parallel efficiency
 - Native support for recursion, dynamic allocation, and string operations
 - Efficient L1/L2/L3 cache hierarchy for memoization
 - No PCIe transfer overhead for results
