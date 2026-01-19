@@ -9,12 +9,84 @@
 #include <format>
 #include <chrono>
 #include <set>
+#ifdef __linux__
 #include <sys/sysinfo.h>
+#elif __APPLE__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <mach/mach.h>
+#include <mach/vm_statistics.h>
+#include <mach/mach_types.h>
+#include <mach/mach_init.h>
+#include <mach/mach_host.h>
+#elif _WIN32
+#include <windows.h>
+#include <sysinfoapi.h>
+#endif
 #include <unistd.h>
 
 namespace vinci {
 
 namespace {
+    /**
+     * @brief Get available memory in bytes (cross-platform)
+     * @return Available memory in bytes, or 0 if unable to determine
+     */
+    size_t getAvailableMemory() {
+#ifdef __linux__
+        struct sysinfo memInfo;
+        if (sysinfo(&memInfo) == 0) {
+            return memInfo.freeram;
+        }
+#elif __APPLE__
+        vm_size_t page_size;
+        mach_port_t mach_port;
+        mach_msg_type_number_t count;
+        vm_statistics64_data_t vm_stats;
+        
+        mach_port = mach_host_self();
+        count = sizeof(vm_stats) / sizeof(natural_t);
+        if (host_page_size(mach_port, &page_size) == KERN_SUCCESS &&
+            host_statistics64(mach_port, HOST_VM_INFO, (host_info64_t)&vm_stats, &count) == KERN_SUCCESS) {
+            return (vm_stats.free_count + vm_stats.inactive_count) * page_size;
+        }
+#elif _WIN32
+        MEMORYSTATUSEX memInfo;
+        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+        if (GlobalMemoryStatusEx(&memInfo)) {
+            return memInfo.ullAvailPhys;
+        }
+#endif
+        return 0;
+    }
+
+    /**
+     * @brief Get total system memory in bytes (cross-platform)
+     * @return Total memory in bytes, or 0 if unable to determine
+     */
+    size_t getTotalMemory() {
+#ifdef __linux__
+        struct sysinfo memInfo;
+        if (sysinfo(&memInfo) == 0) {
+            return memInfo.totalram;
+        }
+#elif __APPLE__
+        int mib[2] = {CTL_HW, HW_MEMSIZE};
+        uint64_t memsize;
+        size_t len = sizeof(memsize);
+        if (sysctl(mib, 2, &memsize, &len, NULL, 0) == 0) {
+            return memsize;
+        }
+#elif _WIN32
+        MEMORYSTATUSEX memInfo;
+        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+        if (GlobalMemoryStatusEx(&memInfo)) {
+            return memInfo.ullTotalPhys;
+        }
+#endif
+        return 0;
+    }
+
     /**
      * @brief Check if system has sufficient memory for requested tree generation
      * @param n Number of nodes
@@ -22,14 +94,14 @@ namespace {
      * @return true if memory is sufficient, false otherwise
      */
     bool checkMemoryAvailability(size_t n, size_t m) {
-        struct sysinfo memInfo;
-        if (sysinfo(&memInfo) != 0) {
+        size_t availableMemory = getAvailableMemory();
+        if (availableMemory == 0) {
             // If we can't get memory info, assume it's fine
             return true;
         }
 
-        // Available memory in GB (including cache/buffers)
-        size_t availableMemoryGB = memInfo.freeram / (1024ULL * 1024 * 1024);
+        // Available memory in GB
+        size_t availableMemoryGB = availableMemory / (1024ULL * 1024 * 1024);
 
         // Conservative memory estimation:
         // - Each tree: ~100 bytes average (string representation + overhead)
@@ -102,6 +174,7 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
         return 0;
     }
 
+    // For small cases or when multithreading is disabled, use single-threaded path
     if (!useMultithreading || n < 10) {
         // For small cases, single-threaded is fine
         std::vector<Tree> results;
@@ -124,9 +197,8 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     size_t numCores = std::thread::hardware_concurrency();
     if (numCores == 0) numCores = 4;
 
-    struct sysinfo memInfo;
-    sysinfo(&memInfo);
-    size_t totalMemoryGB = memInfo.totalram / (1024 * 1024 * 1024);
+    size_t totalMemory = getTotalMemory();
+    size_t totalMemoryGB = (totalMemory > 0) ? (totalMemory / (1024ULL * 1024 * 1024)) : 8;
 
     // Scale parallelism based on resources
     size_t maxThreads = std::min(numCores, size_t(32));
@@ -161,16 +233,27 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     // Process partitions in parallel with per-thread caches
     std::vector<std::jthread> threads;
     std::vector<std::vector<Tree>> threadResults(maxThreads);
+    // Pre-reserve space to avoid reallocations during parallel execution
+    for (auto& vec : threadResults) {
+        vec.reserve(10000);  // Reserve reasonable space
+    }
+    std::vector<std::mutex> resultMutexes(maxThreads);  // One mutex per thread result vector
     std::atomic<size_t> partitionIndex{0};
     std::atomic<size_t> partitionsCompleted{0};
     size_t totalPartitions = allPartitions.size();
 
+    // Pre-create thread caches before launching threads to avoid concurrent copying
+    std::vector<std::vector<std::vector<std::vector<Tree>>>> threadCaches(maxThreads);
+    for (size_t t = 0; t < maxThreads; ++t) {
+        threadCaches[t] = cache_;
+    }
+
     // Launch worker threads
     for (size_t t = 0; t < maxThreads; ++t) {
         threads.emplace_back(
-            [this, &allPartitions, &partitionIndex, &partitionsCompleted, &threadResults, t, totalPartitions, n, m, maxThreads](std::stop_token stoken) {
-                // Each thread gets its own cache (replicated data)
-                std::vector<std::vector<std::vector<Tree>>> threadCache = cache_;
+            [this, &allPartitions, &partitionIndex, &partitionsCompleted, &threadResults, &threadCaches, &resultMutexes, t, totalPartitions, n, m, maxThreads](std::stop_token stoken) {
+                // Each thread uses its pre-allocated cache
+                auto& threadCache = threadCaches[t];
 
                 while (!stoken.stop_requested()) {
                     // Grab work in larger batches to reduce contention
@@ -197,7 +280,14 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
 
                         if (validPartition) {
                             std::vector<Tree> currentChildren;
-                            generateCombinations(partition, m, childTreeOptions, 0, currentChildren, threadResults[t]);
+                            std::vector<Tree> localResults;
+                            generateCombinations(partition, m, childTreeOptions, 0, currentChildren, localResults);
+                            
+                            // Add results with mutex protection
+                            {
+                                std::lock_guard<std::mutex> lock(resultMutexes[t]);
+                                threadResults[t].insert(threadResults[t].end(), localResults.begin(), localResults.end());
+                            }
                         }
 
                         // Update progress
@@ -249,8 +339,7 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
                 std::string repr = tree.toString();
                 if (seenGlobal.find(repr) == seenGlobal.end()) {
                     seenGlobal.insert(repr);
-                    callback(tree);
-                    ++count_;
+                    invokeCallback(tree, callback);
                 }
             }
         }
