@@ -233,9 +233,9 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     // Process partitions in parallel with per-thread caches
     std::vector<std::jthread> threads;
     std::vector<std::vector<Tree>> threadResults(maxThreads);
-    // Pre-reserve space to avoid reallocations during parallel execution
+    // Pre-reserve generous space to avoid reallocations during parallel execution
     for (auto& vec : threadResults) {
-        vec.reserve(10000);  // Reserve reasonable space
+        vec.reserve(100000);  // Large reservation to prevent any reallocation
     }
     std::vector<std::mutex> resultMutexes(maxThreads);  // One mutex per thread result vector
     std::atomic<size_t> partitionIndex{0};
