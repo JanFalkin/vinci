@@ -61,33 +61,6 @@ namespace {
     }
 
     /**
-     * @brief Get total system memory in bytes (cross-platform)
-     * @return Total memory in bytes, or 0 if unable to determine
-     */
-    size_t getTotalMemory() {
-#ifdef __linux__
-        struct sysinfo memInfo;
-        if (sysinfo(&memInfo) == 0) {
-            return memInfo.totalram;
-        }
-#elif __APPLE__
-        int mib[2] = {CTL_HW, HW_MEMSIZE};
-        uint64_t memsize;
-        size_t len = sizeof(memsize);
-        if (sysctl(mib, 2, &memsize, &len, NULL, 0) == 0) {
-            return memsize;
-        }
-#elif _WIN32
-        MEMORYSTATUSEX memInfo;
-        memInfo.dwLength = sizeof(MEMORYSTATUSEX);
-        if (GlobalMemoryStatusEx(&memInfo)) {
-            return memInfo.ullTotalPhys;
-        }
-#endif
-        return 0;
-    }
-
-    /**
      * @brief Check if system has sufficient memory for requested tree generation
      * @param n Number of nodes
      * @param m Maximum leaf nodes
@@ -197,14 +170,8 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     size_t numCores = std::thread::hardware_concurrency();
     if (numCores == 0) numCores = 4;
 
-    size_t totalMemory = getTotalMemory();
-    size_t totalMemoryGB = (totalMemory > 0) ? (totalMemory / (1024ULL * 1024 * 1024)) : 8;
-
-    // Scale parallelism based on resources
-    size_t maxThreads = std::min(numCores, size_t(32));
-    if (totalMemoryGB > 64) {
-        maxThreads = numCores; // Use all cores if we have plenty of RAM
-    }
+    // Use all available cores now that threading synchronization is fixed
+    size_t maxThreads = std::min(numCores, size_t(16));
 
     // Pre-warm cache for small subtrees (single-threaded, shared)
     size_t prewarmSize = std::min(n / 2, size_t(15));
@@ -214,12 +181,10 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     // Each thread gets its own cache copy and works on independent partitions
     size_t remainingNodes = n - 1;
 
-    // Generate all partitions first
-    // For larger M, we need more partitions to keep threads busy
-    size_t maxChildren = std::min(remainingNodes, std::max(size_t(20), m * 5));
+    // Generate all partitions first (must process ALL possible numChildren values)
     std::vector<std::pair<size_t, std::vector<size_t>>> allPartitions;
 
-    for (size_t numChildren = 1; numChildren <= maxChildren; ++numChildren) {
+    for (size_t numChildren = 1; numChildren <= remainingNodes; ++numChildren) {
         std::vector<std::vector<size_t>> partitions;
         std::vector<size_t> current;
         generatePartitions(remainingNodes, numChildren, current, partitions);
@@ -232,74 +197,83 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
 
     // Process partitions in parallel with per-thread caches
     std::vector<std::jthread> threads;
+    threads.reserve(maxThreads);  // Reserve to prevent reallocation during emplace_back
     std::vector<std::vector<Tree>> threadResults(maxThreads);
+    std::vector<std::mutex> threadMutexes(maxThreads);  // One mutex per thread
     // Pre-reserve generous space to avoid reallocations during parallel execution
     for (auto& vec : threadResults) {
         vec.reserve(100000);  // Large reservation to prevent any reallocation
     }
-    std::vector<std::mutex> resultMutexes(maxThreads);  // One mutex per thread result vector
-    std::atomic<size_t> partitionIndex{0};
     std::atomic<size_t> partitionsCompleted{0};
     size_t totalPartitions = allPartitions.size();
 
-    // Pre-create thread caches before launching threads to avoid concurrent copying
+    // Pre-create thread caches with proper synchronization
     std::vector<std::vector<std::vector<std::vector<Tree>>>> threadCaches(maxThreads);
     for (size_t t = 0; t < maxThreads; ++t) {
         threadCaches[t] = cache_;
     }
 
-    // Launch worker threads
+    // Memory barrier to ensure cache copies are visible to all threads
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    // Launch worker threads with static work assignment
     for (size_t t = 0; t < maxThreads; ++t) {
         threads.emplace_back(
-            [this, &allPartitions, &partitionIndex, &partitionsCompleted, &threadResults, &threadCaches, &resultMutexes, t, m, maxThreads](std::stop_token stoken) {
-                // Each thread uses its pre-allocated cache
+            [this, &allPartitions, &partitionsCompleted, &threadResults, &threadCaches, &threadMutexes, t, m, maxThreads](std::stop_token stoken) {
+                // Use the pre-allocated cache for this thread
                 auto& threadCache = threadCaches[t];
 
-                while (!stoken.stop_requested()) {
-                    // Grab work in larger batches to reduce contention
-                    size_t batchSize = std::max(size_t(1), allPartitions.size() / (maxThreads * 4));
-                    size_t startIdx = partitionIndex.fetch_add(batchSize);
-                    size_t endIdx = std::min(startIdx + batchSize, allPartitions.size());
+                // Static partitioning: each thread processes every maxThreads-th partition
+                for (size_t idx = t; idx < allPartitions.size(); idx += maxThreads) {
+                    if (stoken.stop_requested()) break;
 
-                    if (startIdx >= allPartitions.size()) break;
+                    // Make a local copy to avoid any potential sharing issues
+                    std::vector<size_t> partition = allPartitions[idx].second;
 
-                    for (size_t idx = startIdx; idx < endIdx; ++idx) {
-                        auto& partition = allPartitions[idx].second;
+                    // Generate child tree options for this partition
+                    std::vector<std::vector<Tree>> childTreeOptions(partition.size());
 
-                        // Generate child tree options for this partition
-                        std::vector<std::vector<Tree>> childTreeOptions(partition.size());
-
-                        bool validPartition = true;
-                        for (size_t i = 0; i < partition.size(); ++i) {
-                            generateTreesRecursive(partition[i], m, childTreeOptions[i], threadCache);
-                            if (childTreeOptions[i].empty()) {
-                                validPartition = false;
-                                break;
-                            }
+                    bool validPartition = true;
+                    for (size_t i = 0; i < partition.size(); ++i) {
+                        std::vector<Tree> tempResults;
+                        generateTreesRecursive(partition[i], m, tempResults, threadCache);
+                        if (tempResults.empty()) {
+                            validPartition = false;
+                            break;
                         }
-
-                        if (validPartition) {
-                            std::vector<Tree> currentChildren;
-                            std::vector<Tree> localResults;
-                            generateCombinations(partition, m, childTreeOptions, 0, currentChildren, localResults);
-
-                            // Add results with mutex protection
-                            {
-                                std::lock_guard<std::mutex> lock(resultMutexes[t]);
-                                threadResults[t].insert(threadResults[t].end(), localResults.begin(), localResults.end());
-                            }
-                        }
-
-                        // Update progress
-                        partitionsCompleted.fetch_add(1);
+                        childTreeOptions[i] = std::move(tempResults);
                     }
+
+                    if (validPartition) {
+                        std::vector<Tree> currentChildren;
+                        std::vector<Tree> localResults;
+                        // Generate into local results first
+                        generateCombinations(partition, m, childTreeOptions, 0, currentChildren, localResults);
+
+                        // Add to thread's results with its dedicated mutex
+                        {
+                            std::lock_guard<std::mutex> lock(threadMutexes[t]);
+                            threadResults[t].insert(threadResults[t].end(), localResults.begin(), localResults.end());
+                        }
+                    }
+
+                    // Update progress
+                    partitionsCompleted.fetch_add(1);
                 }
             }
         );
     }
 
-    // Progress reporting thread (in its own scope to ensure cleanup)
-    {
+    // Wait for all worker threads to complete their work naturally
+    while (partitionsCompleted.load() < totalPartitions) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // Now join all threads - they should be finishing naturally
+    threads.clear();
+
+    // Progress reporting thread (DISABLED for debugging)
+    if (false) {
         std::jthread progressThread([&](std::stop_token stoken) {
             auto startTime = std::chrono::steady_clock::now();
 
@@ -328,26 +302,23 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
             }
         });
 
-        // Wait for all worker threads to complete (RAII auto-joins)
-        threads.clear();
-
-        // Collect results with global deduplication
-        std::set<std::string> seenGlobal;
-        for (auto& trees : threadResults) {
-            for (auto& tree : trees) {
-                tree.sortToCanonical();
-                std::string repr = tree.toString();
-                if (seenGlobal.find(repr) == seenGlobal.end()) {
-                    seenGlobal.insert(repr);
-                    invokeCallback(tree, callback);
-                }
-            }
-        }
-
         // progressThread stops and joins here when scope exits
     }
 
-    // Now safe to clear the progress line
+    // Collect results with global deduplication
+    std::set<std::string> seenGlobal;
+    for (auto& trees : threadResults) {
+            for (auto& tree : trees) {
+                tree.sortToCanonical();
+                std::string repr = tree.toString();
+            if (seenGlobal.find(repr) == seenGlobal.end()) {
+                seenGlobal.insert(repr);
+                invokeCallback(tree, callback);
+            }
+        }
+    }
+
+    // Clear the progress line
     std::cout << "\r" << std::string(100, ' ') << "\r" << std::flush;
 
     return count_;
@@ -404,7 +375,7 @@ void TreeGenerator::generateTreesRecursive(size_t n, size_t maxLeaves, std::vect
         if (maxLeaves >= 1) {
             results.push_back(Tree());
         }
-        cache_[n][maxLeaves] = results;
+        localCache[n][maxLeaves] = results;
         return;
     }
 
@@ -412,91 +383,37 @@ void TreeGenerator::generateTreesRecursive(size_t n, size_t maxLeaves, std::vect
     // (n-1 because root takes 1 node)
     size_t remainingNodes = n - 1;
 
-    // For large problems, parallelize across different numChildren values
-    if (remainingNodes > 12 && maxLeaves > 4) {
-        std::vector<std::jthread> threads;
-        std::vector<std::vector<Tree>> threadResults(remainingNodes);
+    // Sequential processing - no nested parallelization to avoid race conditions
+    for (size_t numChildren = 1; numChildren <= remainingNodes; ++numChildren) {
+        // Generate all partitions of remainingNodes into numChildren parts
+        std::vector<std::vector<size_t>> partitions;
+        std::vector<size_t> current;
+        generatePartitions(remainingNodes, numChildren, current, partitions);
 
-        for (size_t numChildren = 1; numChildren <= remainingNodes; ++numChildren) {
-            threads.emplace_back(
-                [this, remainingNodes, numChildren, maxLeaves, localCache, &threadResults](std::stop_token stoken) mutable {
-                    if (stoken.stop_requested()) return;
+        for (auto& partition : partitions) {
+            // Sort partition in descending order for canonical form
+            std::sort(partition.begin(), partition.end(), std::greater<size_t>());
 
-                    // Generate all partitions of remainingNodes into numChildren parts
-                    std::vector<std::vector<size_t>> partitions;
-                    std::vector<size_t> current;
-                    generatePartitions(remainingNodes, numChildren, current, partitions);
+            // For each partition, generate all possible tree combinations
+            std::vector<std::vector<Tree>> childTreeOptions(partition.size());
 
-                    for (auto& partition : partitions) {
-                        if (stoken.stop_requested()) return;
-
-                        // Sort partition in descending order for canonical form
-                        std::sort(partition.begin(), partition.end(), std::greater<size_t>());
-
-                        // For each partition, generate all possible tree combinations
-                        std::vector<std::vector<Tree>> childTreeOptions(partition.size());
-
-                        bool validPartition = true;
-                        for (size_t i = 0; i < partition.size(); ++i) {
-                            // Each child subtree can have at most maxLeaves leaves
-                            generateTreesRecursive(partition[i], maxLeaves, childTreeOptions[i], localCache);
-                            if (childTreeOptions[i].empty()) {
-                                validPartition = false;
-                                break;
-                            }
-                        }
-
-                        if (!validPartition) {
-                            continue;
-                        }
-
-                        // Generate all combinations of children
-                        std::vector<Tree> currentChildren;
-                        generateCombinations(partition, maxLeaves, childTreeOptions, 0, currentChildren, threadResults[numChildren - 1]);
-                    }
-                });
-        }
-
-        // Wait for all threads (RAII auto-joins)
-        threads.clear();
-
-        // Collect results from all parallel tasks
-        for (auto& partialResults : threadResults) {
-            results.insert(results.end(), partialResults.begin(), partialResults.end());
-        }
-    } else {
-        // Sequential processing for small problems
-        for (size_t numChildren = 1; numChildren <= remainingNodes; ++numChildren) {
-            // Generate all partitions of remainingNodes into numChildren parts
-            std::vector<std::vector<size_t>> partitions;
-            std::vector<size_t> current;
-            generatePartitions(remainingNodes, numChildren, current, partitions);
-
-            for (auto& partition : partitions) {
-                // Sort partition in descending order for canonical form
-                std::sort(partition.begin(), partition.end(), std::greater<size_t>());
-
-                // For each partition, generate all possible tree combinations
-                std::vector<std::vector<Tree>> childTreeOptions(partition.size());
-
-                bool validPartition = true;
-                for (size_t i = 0; i < partition.size(); ++i) {
-                    // Each child subtree can have at most maxLeaves leaves
-                    generateTreesRecursive(partition[i], maxLeaves, childTreeOptions[i], localCache);
-                    if (childTreeOptions[i].empty()) {
-                        validPartition = false;
-                        break;
-                    }
+            bool validPartition = true;
+            for (size_t i = 0; i < partition.size(); ++i) {
+                // Each child subtree can have at most maxLeaves leaves
+                generateTreesRecursive(partition[i], maxLeaves, childTreeOptions[i], localCache);
+                if (childTreeOptions[i].empty()) {
+                    validPartition = false;
+                    break;
                 }
-
-                if (!validPartition) {
-                    continue;
-                }
-
-                // Generate all combinations of children
-                std::vector<Tree> currentChildren;
-                generateCombinations(partition, maxLeaves, childTreeOptions, 0, currentChildren, results);
             }
+
+            if (!validPartition) {
+                continue;
+            }
+
+            // Generate all combinations of children
+            std::vector<Tree> currentChildren;
+            generateCombinations(partition, maxLeaves, childTreeOptions, 0, currentChildren, results);
         }
     }
 
