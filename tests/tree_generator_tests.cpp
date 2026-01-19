@@ -146,3 +146,60 @@ TEST_F(TreeGeneratorTest, Assignment_N30M3) {
     std::cout << "Total trees for N=30, M=3: " << count << "\n";
     EXPECT_EQ(count, 267);
 }
+// OEIS A000081: Number of rooted trees with n nodes
+// Reference: https://oeis.org/A000081
+// Sequence: 0, 1, 1, 2, 4, 9, 20, 48, 115, 286, 719, 1842, 4766, 12486, 32973...
+//
+// These tests verify our implementation against the authoritative OEIS sequence,
+// ensuring correctness of the tree generation algorithm.
+TEST_F(TreeGeneratorTest, OEIS_A000081_Small) {
+    // Test small values from OEIS A000081
+    struct TestCase {
+        size_t n;
+        size_t expected;
+    };
+
+    std::vector<TestCase> testCases = {
+        {1, 1},     // Single node
+        {2, 1},     // Root with one child
+        {3, 2},     // Two distinct trees
+        {4, 4},     // Four distinct trees
+        {5, 9},     // Nine distinct trees
+        {6, 20},    // Twenty distinct trees
+        {7, 48},    // Forty-eight distinct trees
+        {8, 115},   // One hundred fifteen distinct trees
+        {9, 286},   // Two hundred eighty-six distinct trees
+        {10, 719}   // Seven hundred nineteen distinct trees
+    };
+
+    for (const auto& tc : testCases) {
+        size_t count = 0;
+        generator.generate(tc.n, 50, [&](const Tree&) { ++count; }, false);
+        EXPECT_EQ(count, tc.expected)
+            << "OEIS A000081 mismatch for n=" << tc.n
+            << " (expected " << tc.expected << ", got " << count << ")";
+    }
+}
+
+TEST_F(TreeGeneratorTest, OEIS_A000081_Medium) {
+    // Test medium values from OEIS A000081
+    struct TestCase {
+        size_t n;
+        size_t expected;
+    };
+
+    std::vector<TestCase> testCases = {
+        {11, 1842},
+        {12, 4766},
+        {13, 12486},
+        {14, 32973}
+    };
+
+    for (const auto& tc : testCases) {
+        size_t count = 0;
+        generator.generate(tc.n, 50, [&](const Tree&) { ++count; }, true);
+        EXPECT_EQ(count, tc.expected)
+            << "OEIS A000081 mismatch for n=" << tc.n
+            << " (expected " << tc.expected << ", got " << count << ")";
+    }
+}

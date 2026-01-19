@@ -48,7 +48,7 @@ public:
      * @brief Check if we should use optimized algorithm
      * Use parallel optimizer for any M when N is large
      */
-    static bool shouldUseOptimized(size_t n, size_t m) {
+    static bool shouldUseOptimized(size_t n, size_t) {
         return n >= 15;  // Parallel optimizer works for any M
     }
 

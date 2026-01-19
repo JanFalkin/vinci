@@ -17,7 +17,7 @@ size_t TreeOptimizer::generateAllWithCallback(
     size_t maxM,
     const TreeCallback& callback,
     bool showProgress) {
-    
+
     // Build cache in parallel up to (n, maxM)
     std::vector<std::vector<std::vector<Tree>>> cache(n + 1,
         std::vector<std::vector<Tree>>(maxM + 1));
@@ -29,7 +29,7 @@ size_t TreeOptimizer::generateAllWithCallback(
     buildCacheParallel(n, maxM, cache);
 
     if (showProgress) {
-        std::cout << "\rCache built. Generating trees...                    \n" << std::flush;
+        std::cout << "\r" << std::string(100, ' ') << "\rCache built. Generating trees...\n" << std::flush;
     }
 
     // Now iterate through all cached results and call callback
@@ -49,7 +49,7 @@ void TreeOptimizer::buildCacheParallel(
     size_t maxN,
     size_t maxK,
     std::vector<std::vector<std::vector<Tree>>>& cache) {
-    
+
     size_t numCores = std::thread::hardware_concurrency();
     if (numCores == 0) numCores = 4;
 
@@ -70,40 +70,39 @@ void TreeOptimizer::buildCacheParallel(
             }
         } else {
             // Parallel processing with larger batch sizes for better efficiency
-            std::vector<std::future<std::vector<std::pair<size_t, std::vector<Tree>>>>> futures;
-            
+            std::vector<std::jthread> threads;
+            std::vector<std::vector<std::pair<size_t, std::vector<Tree>>>> threadResults(numCores);
+
             size_t totalWork = maxN - leafCount + 1;
             // Larger batches = less synchronization, better CPU utilization
             size_t batchSize = std::max(size_t(2), totalWork / numCores);
             std::atomic<size_t> workIndex{leafCount};
 
             for (size_t t = 0; t < numCores; ++t) {
-                futures.push_back(std::async(std::launch::async,
-                    [&cache, leafCount, maxN, batchSize, &workIndex]() -> std::vector<std::pair<size_t, std::vector<Tree>>> {
-                        std::vector<std::pair<size_t, std::vector<Tree>>> threadResults;
-                        
-                        while (true) {
+                threads.emplace_back(
+                    [&cache, &threadResults, t, leafCount, maxN, batchSize, &workIndex](std::stop_token stoken) {
+                        while (!stoken.stop_requested()) {
                             size_t startN = workIndex.fetch_add(batchSize, std::memory_order_relaxed);
                             if (startN > maxN) break;
-                            
+
                             size_t endN = std::min(startN + batchSize - 1, maxN);
-                            
+
                             for (size_t nodeCount = startN; nodeCount <= endN; ++nodeCount) {
                                 std::vector<Tree> results;
                                 generateWithExactLeavesGeneric(
                                     nodeCount, leafCount, results, cache);
-                                threadResults.emplace_back(nodeCount, std::move(results));
+                                threadResults[t].emplace_back(nodeCount, std::move(results));
                             }
                         }
-                        
-                        return threadResults;
-                    }));
+                    });
             }
 
+            // Wait for all threads (RAII auto-joins)
+            threads.clear();
+
             // Collect results from all threads
-            for (auto& future : futures) {
-                auto threadResults = future.get();
-                for (auto& [nodeCount, trees] : threadResults) {
+            for (auto& results : threadResults) {
+                for (auto& [nodeCount, trees] : results) {
                     cache[nodeCount][leafCount] = std::move(trees);
                 }
             }
@@ -153,7 +152,7 @@ void TreeOptimizer::generateWithExactLeaves(size_t n, size_t k, std::vector<Tree
                     generateFourLeaves(nodeCount, cache[nodeCount][leafCount]);
                 }
             } else {
-                generateWithExactLeavesGeneric(nodeCount, leafCount, 
+                generateWithExactLeavesGeneric(nodeCount, leafCount,
                     cache[nodeCount][leafCount], cache);
             }
         }
@@ -167,7 +166,7 @@ void TreeOptimizer::generateWithExactLeavesGeneric(
     size_t k,
     std::vector<Tree>& results,
     std::vector<std::vector<std::vector<Tree>>>& cache) {
-    
+
     results.clear();
     std::set<std::string> seen;
 
@@ -200,7 +199,7 @@ void TreeOptimizer::generateWithExactLeavesGeneric(
             // Distribute extraNodes among numChildren children
             std::vector<std::vector<size_t>> nodeDistributions;
             std::vector<size_t> currentNodeDist;
-            generateIntegerPartitions(extraNodes + numChildren, numChildren, 1, 
+            generateIntegerPartitions(extraNodes + numChildren, numChildren, 1,
                 currentNodeDist, nodeDistributions);
 
             for (const auto& nodeDist : nodeDistributions) {

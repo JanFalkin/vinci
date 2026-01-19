@@ -21,5 +21,3 @@ Thumbs.db
 # Test outputs
 Testing/
 
-# Exclude markdown files (to be added later after review)
-*.md
