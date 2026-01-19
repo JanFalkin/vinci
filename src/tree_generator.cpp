@@ -43,7 +43,7 @@ namespace {
         mach_port_t mach_port;
         mach_msg_type_number_t count;
         vm_statistics64_data_t vm_stats;
-        
+
         mach_port = mach_host_self();
         count = sizeof(vm_stats) / sizeof(natural_t);
         if (host_page_size(mach_port, &page_size) == KERN_SUCCESS &&
@@ -251,7 +251,7 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
     // Launch worker threads
     for (size_t t = 0; t < maxThreads; ++t) {
         threads.emplace_back(
-            [this, &allPartitions, &partitionIndex, &partitionsCompleted, &threadResults, &threadCaches, &resultMutexes, t, totalPartitions, n, m, maxThreads](std::stop_token stoken) {
+            [this, &allPartitions, &partitionIndex, &partitionsCompleted, &threadResults, &threadCaches, &resultMutexes, t, m, maxThreads](std::stop_token stoken) {
                 // Each thread uses its pre-allocated cache
                 auto& threadCache = threadCaches[t];
 
@@ -282,7 +282,7 @@ size_t TreeGenerator::generate(size_t n, size_t m, TreeCallback callback, bool u
                             std::vector<Tree> currentChildren;
                             std::vector<Tree> localResults;
                             generateCombinations(partition, m, childTreeOptions, 0, currentChildren, localResults);
-                            
+
                             // Add results with mutex protection
                             {
                                 std::lock_guard<std::mutex> lock(resultMutexes[t]);
